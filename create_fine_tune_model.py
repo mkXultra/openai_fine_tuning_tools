@@ -111,9 +111,12 @@ def main():
     
     while fine_tune_model_events.status == "running":
         current_time = datetime.now()
-        estimated_finish = datetime.fromtimestamp(fine_tune_model_events.estimated_finish)
-        time_difference = estimated_finish - current_time
-
+        if fine_tune_model_events.estimated_finish:
+            estimated_finish = datetime.fromtimestamp(fine_tune_model_events.estimated_finish)
+            time_difference = estimated_finish - current_time
+        else:
+            time_difference = timedelta(minutes=5)
+ 
         if time_difference > timedelta(minutes=5):
             print(f"Estimated finish time is more than 5 minutes away ({estimated_finish}). Exiting program.")
             return

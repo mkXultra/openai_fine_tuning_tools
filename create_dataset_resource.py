@@ -1,9 +1,10 @@
 import json
+import argparse
 
-def main():
+def main(lines_per_dataset, output_file_name):
     en_file = 'original/en.txt'
     ja_file = 'original/ja_utf8.txt'
-    output_file = 'original_dataset.jsonl'
+    output_file = f'{output_file_name}_{lines_per_dataset}.jsonl'
     
     en_lines = read_file(en_file)
     ja_lines = read_file(ja_file)
@@ -13,23 +14,38 @@ def main():
         return
     
     inserted_count = 0
+    buffer = []
     with open(output_file, 'w', encoding='utf-8') as jsonl_file:
         for index, (en, ja) in enumerate(zip(en_lines, ja_lines), start=1):
             if "################" in en or "################" in ja:
-                continue  # Skip this line if it contains the specified prefix
+                if buffer:
+                    write_data(jsonl_file, buffer, inserted_count)
+                    inserted_count += 1
+                    buffer = []
+                continue
             if ja.strip() == "" or en.strip() == "":
                 continue
-            inserted_count += 1
-            data = {
-                "id": inserted_count,
-                "line": index,
-                "translation": {
-                    "en": en.strip(),
-                    "ja": ''.join(ja.strip().split())  # 日本語の文字間のスペースを除去
-                }
-            }
-            json.dump(data, jsonl_file, ensure_ascii=False)
-            jsonl_file.write('\n')
+            buffer.append((index, en.strip(), ''.join(ja.strip().split())))
+            if len(buffer) == lines_per_dataset:
+                write_data(jsonl_file, buffer, inserted_count)
+                inserted_count += 1
+                buffer = []
+        
+        # 残りのデータを処理
+        if buffer:
+            write_data(jsonl_file, buffer, inserted_count)
+
+def write_data(jsonl_file, buffer, inserted_count):
+    data = {
+        "id": inserted_count + 1,
+        "lines": [line[0] for line in buffer],
+        "translation": {
+            "en": "\n".join([line[1] for line in buffer]),
+            "ja": "\n".join([line[2] for line in buffer])
+        }
+    }
+    json.dump(data, jsonl_file, ensure_ascii=False)
+    jsonl_file.write('\n')
 
 def read_file(filename):
     encodings = ['utf-8', 'shift_jis', 'euc_jp', 'iso2022_jp']
@@ -42,4 +58,9 @@ def read_file(filename):
     raise ValueError(f"Unable to decode the file {filename} with any of the attempted encodings.")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Create dataset resource')
+    parser.add_argument('--lines', type=int, required=True, help='Number of lines per dataset')
+    parser.add_argument('--output', type=str, required=True, help='Output file name without extension')
+    args = parser.parse_args()
+
+    main(args.lines, args.output)
