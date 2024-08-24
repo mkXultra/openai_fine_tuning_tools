@@ -2,3 +2,5 @@ datasets==2.21.0
 transformers==4.44.1
 openai==1.42.0
 anthropic==0.34.1
+tiktoken==0.7.0
+black==24.8.0
