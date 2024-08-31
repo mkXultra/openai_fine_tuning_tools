@@ -5,7 +5,9 @@ import sys
 from abc import ABC, abstractmethod
 import re
 from src.lib.embed.labse import LaBSEEmbedder
+from prep_and_analisys_dataset import DatasetAnalyzer
 from typing import Tuple
+from datetime import datetime
 
 class DatasetParser(ABC):
     @abstractmethod
@@ -80,10 +82,13 @@ def get_parser(dataset_name):
     else:
         raise ValueError(f"not supported dataset name: {dataset_name}")
 
-def load_config(config_file):
-    config_file_path = f"{config_file}.json"
+def load_config(config_file_path):
     with open(config_file_path, "r", encoding="utf-8") as path:
         return json.load(path)
+
+def write_config(config, output_file_path):
+    with open(output_file_path, "w", encoding="utf-8") as path:
+        json.dump(config, path, indent=4, ensure_ascii=False)
 
 
 def make_messages(system_message, prompt_template, en, jp):
@@ -99,12 +104,19 @@ def make_messages(system_message, prompt_template, en, jp):
 
 class DataMaker:
     def __init__(self, config, parser, is_debug=False):
+        self.end_index = 0
         self.config = config
         self.parser = parser
         self.embedder = LaBSEEmbedder()
         self.is_debug = is_debug
         self.similarity = config.get("similarity", 0.9)
-        self.japanese_ratio = config.get("japanese_ratio", 0.5)
+        self.japanese_ratio = config.get("japanese_ratio", 0.6)
+        self.processed_en = set()
+
+    def log(self, message):
+        if self.is_debug:
+            pass
+            # print(message)
     
     def is_japanese(self, text):
         # 日本語文字（ひらがな、カタカナ、漢字）をカウント
@@ -116,9 +128,12 @@ class DataMaker:
         # 日本語文字の割合を計算
         japanese_ratio = len(japanese_chars) / total_chars if total_chars > 0 else 0
         
-        # 日本語文字が含まれていて、かつ50%以上であればTrueを返す
-        if self.is_debug and japanese_ratio <= self.japanese_ratio:
-            print(f"japanese wrong text: {text}")
+        if self.is_debug and not(len(japanese_chars) > 0 and japanese_ratio >= self.japanese_ratio):
+            # self.log("len(japanese_chars) > 0", len(japanese_chars) > 0)
+            # self.log("japanese_ratio >= self.japanese_ratio", japanese_ratio >= self.japanese_ratio)
+            self.log(f"japanese wrong text: {text}")
+
+        # 日本語文字が含まれていて、かつ{self.japanese_ratio}%以上であればTrueを返す
         return len(japanese_chars) > 0 and japanese_ratio >= self.japanese_ratio
 
 
@@ -129,24 +144,27 @@ class DataMaker:
         # check embedding similarity
         similarity = self.embedder.compare_texts(en, jp)
         if self.is_debug:
-            print(f"similarity: {similarity}")
-        return similarity > 0.9
+            self.log(f"similarity: {similarity}")
+        return similarity >= self.similarity
 
     def create_dataset(self, config, output_file, start, limit):
         parser = self.parser
         with open(output_file, "w", encoding="utf-8") as f:
             entries_processed = 0
             for i in range(start, parser.data_length()):
+                self.end_index = i
                 if entries_processed >= limit:
                     break
-                print(f"Processing entry {entries_processed+1} of {limit}")
                 en, jp = parser.parse(i)
                 if not self.is_clean_data(en, jp):
-                    # if self.is_debug:
-                        # print("not clean data")
-                        # print(f"en: {en}")
-                        # print(f"jp: {jp}")
+                    self.log("not clean data or duplicate en")
+                    self.log(f"en: {en}")
+                    self.log(f"jp: {jp}")
                     continue
+                if en in self.processed_en:
+                    self.log("duplicate en")
+                    continue
+                print(f"Processing entry {entries_processed+1} of {limit}")
                 f.write(
                     json.dumps(
                         make_messages(config["system"], config["user"], en, jp),
@@ -154,6 +172,7 @@ class DataMaker:
                     )
                     + "\n"
                 )
+                self.processed_en.add(en)  # 処理したenを追加
                 entries_processed += 1
         print(
             f"File '{output_file}' has been created with {entries_processed} entries."
@@ -174,11 +193,15 @@ class DataMaker:
 def main():
     if len(sys.argv) < 2:
         print("Usage: python create_dataset.py <config_file>")
-        print("example: python create_dataset.py prompt_test4")
+        print("example: python create_dataset.py prompt_test4.json")
         sys.exit(1)
 
-    config_file = sys.argv[1]
-    config = load_config(config_file)
+    config_file_path = sys.argv[1]
+    config_file = os.path.splitext(os.path.basename(config_file_path))[0]
+    config = load_config(config_file_path)
+
+    config["ft_dataset_file_start_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    write_config(config, config_file_path)
 
     # Create output directory
     output_dir = f"config/{config_file}"
@@ -189,8 +212,15 @@ def main():
     start = config.get("start", 0)
     limit = config.get("limit", 100)
     parser = get_parser(config["dataset"])
-    data_maker = DataMaker(config, parser)
+    data_maker = DataMaker(config, parser, is_debug=True)
     data_maker.create_dataset(config, main_output_file, start, limit)
+    config["ft_dataset_file"] = main_output_file
+    config["end_index"] = data_maker.end_index
+    config["ft_dataset_file_created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    write_config(config, config_file_path)
+    print(f"config saved to {config_file_path}")
+    analyzer = DatasetAnalyzer(main_output_file)
+    analyzer.run_analysis()
 
     # # Create evaluation dataset
     # eval_output_file = f"{output_dir}/{config_file}_evaluation_dataset.jsonl"
