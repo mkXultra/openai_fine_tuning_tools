@@ -5,7 +5,7 @@ import numpy as np
 class LaBSEEmbedder:
     def __init__(self, model_name="sentence-transformers/LaBSE"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, clean_up_tokenization_spaces=True)
         self.model = AutoModel.from_pretrained(model_name).to(self.device)
 
     def get_embedding(self, text):
