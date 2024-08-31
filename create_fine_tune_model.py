@@ -15,10 +15,18 @@ def upload_data(file_path):
 
 
 # create the fine-tune model
-def create_fine_tune_model(dataset_file_id, model, suffix):
-    fine_tune_model = client.fine_tuning.jobs.create(
-        training_file=dataset_file_id, model=model, suffix=suffix
-    )
+def create_fine_tune_model(dataset_file_id, model, suffix, epochs=None):
+    if epochs:
+        fine_tune_model = client.fine_tuning.jobs.create(
+            training_file=dataset_file_id, model=model, suffix=suffix,
+            hyperparameters={
+                "n_epochs": epochs
+            }
+        )
+    else:
+        fine_tune_model = client.fine_tuning.jobs.create(
+            training_file=dataset_file_id, model=model, suffix=suffix
+        )
     return fine_tune_model
 
 
@@ -98,7 +106,7 @@ def main():
     if config.get("fine_job_id"):
         fine_tune_model_id = config.get("fine_job_id")
     else:
-        fine_tune_model = create_fine_tune_model(dataset_file_id, base_model, suffix)
+        fine_tune_model = create_fine_tune_model(dataset_file_id, base_model, suffix, config.get("epochs", None))
         fine_tune_model_id = fine_tune_model.id
         config["fine_job_id"] = fine_tune_model_id
 

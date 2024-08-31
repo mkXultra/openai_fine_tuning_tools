@@ -1,108 +1,135 @@
 import sys
 import json
-from enum import Enum
 from openai import OpenAI
-from typing import Dict, List
+from anthropic import Anthropic
+from typing import Dict, List, Union
+import numpy as np
+from datetime import datetime
 
-class EvalType(Enum):
-    A = "a"
-    B = "b"
-    C = "c"
+EMBEDDING_MODEL = "text-embedding-3-large"
 
 class Config:
     def __init__(self, config_file: str):
-        with open(f"{config_file}.json", "r", encoding="utf-8") as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             self.data = json.load(f)
         
     def get(self, key: str, default=None):
         return self.data.get(key, default)
 
 class EvaluationRunner:
-    def __init__(self, config: Config, eval_type: EvalType):
+    def __init__(self, config: Config):
         self.config = config
-        self.eval_type = eval_type
         self.client = OpenAI()
-
+        self.anthropic_client = Anthropic()
     def run(self):
-        target_str = self.load_target_string()
-        messages = self.make_messages(target_str)
-        
-        print_completion("original", target_str)
-        
+        target_pairs = self.load_target_strings()
         models = self.get_models_to_evaluate()
-        completions = self.get_completions(models, messages)
+        model_similarities = {model: {"scores":[], "avg":0, "data":[]} for model in models}
         
-        for model, completion in completions.items():
-            print_completion(f"{model} case", get_completion_text(completion))
+        for model in models:
+            for epoch in range(self.config.get("epoch", 1)):
+                for target_pair in target_pairs:
+                    en_text = target_pair["en"]
+                    ja_text = target_pair["ja"]
+                    messages = self.make_messages(en_text, model)
+                    completion = get_completion(self.client, self.anthropic_client, model, messages)
+                    try:
+                        similarity = self.evaluate(ja_text, get_completion_text(completion))
+                    except Exception as e:
+                        print(f"Error: {e}")
+                        print(f"Model: {model}, reference: {ja_text}, Completion: {completion}")
+                        continue
+                    model_similarities[model]["scores"].append(similarity)
+                    model_similarities[model]["data"].append(get_completion_text(completion))
+                    print(f"Model: {model}, Embedding 類似度: {similarity:.4f}")
+
+        # Calculate average similarities and sort models
+        for model, similarities in model_similarities.items():
+            avg_similarity = np.mean(similarities["scores"])
+            model_similarities[model]["avg"] = avg_similarity
+        sorted_models = sorted(model_similarities.items(), key=lambda x: x[1]["avg"], reverse=True)
         
-        self.print_custom_case()
+        # Print results
+        for model, similarity_data in sorted_models:
+            print(f"{model}: {similarity_data['avg']:.4f}")
+        
+        # Write results to JSON file
+        self.write_results_to_json(sorted_models)
 
-    def load_target_string(self) -> str:
-        eval_files = {
-            EvalType.A: "evaluation.txt",
-            EvalType.B: "evaluation_dataset.txt",
-            EvalType.C: "evaluation_dataset2.txt"
-        }
-        with open(eval_files[self.eval_type], "r", encoding="utf-8") as f:
-            return f.read()
+    def evaluate(self, reference: str, candidate: str) -> float:
+        similarity = self.cosine_similarity(self.get_embedding(reference), self.get_embedding(candidate))
+        return similarity
 
-    def make_messages(self, text: str) -> List[Dict[str, str]]:
-        system_message = self.config.get("system")
-        prompt_template = self.config.get("user")
-        prompt = prompt_template.format(text=text)
+    def get_embedding(self, text):
+        response = self.client.embeddings.create(
+            input=text,
+            model=EMBEDDING_MODEL,
+        )
+        return response.data[0].embedding
+
+    def cosine_similarity(self, a, b):
+        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+    def load_target_strings(self) -> List[Dict[str, str]]:
+        with open(self.config.get("dataset"), "r", encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def make_messages(self, text: str, model: str) -> List[Dict[str, str]]:
+        if model.startswith("claude"):
+            system_message = self.config.get("system")
+            prompt_template = self.config.get("user")
+            prompt = prompt_template.format(text=text)
+        else:
+            system_message = self.config.get("system")
+            prompt_template = self.config.get("user")
+            prompt = prompt_template.format(text=text)
         return [
             {"role": "system", "content": system_message},
             {"role": "user", "content": prompt},
         ]
 
     def get_models_to_evaluate(self) -> List[str]:
-        models = [self.config.get("base_model"), self.config.get("ft_model")]
-        for i in range(1, 4):
-            model = self.config.get(f"compare_model{i if i > 1 else ''}")
-            if model and (self.eval_type != EvalType.A or i < 3):
-                models.append(model)
-        return [model for model in models if model]
+        return self.config.get("models")
 
-    def get_completions(self, models: List[str], messages: List[Dict[str, str]]) -> Dict[str, dict]:
-        return {model: get_completion(self.client, model, messages) for model in models}
+    def write_results_to_json(self, model_similarities: Dict[str, Dict[str, Union[List[float], float]]]):
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = self.config.get("output_file", f"evaluation_results_{current_time}.json")
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(model_similarities, f, indent=2, ensure_ascii=False)
+        print(f"Results written to {output_file}")
 
-    def print_custom_case(self):
-        custom_files = {
-            EvalType.A: "evaluation_gpt4.txt",
-            EvalType.B: "evaluation_dataset_ja.txt",
-            EvalType.C: "evaluation_dataset2_ja.txt"
-        }
-        custom_name = "gpt4o" if self.eval_type == EvalType.A else "custom"
-        with open(custom_files[self.eval_type], "r", encoding="utf-8") as f:
-            print_completion(f"{custom_name} case", f.read())
-
-def get_completion(client: OpenAI, model: str, messages: List[Dict[str, str]]) -> dict:
-    return client.chat.completions.create(model=model, messages=messages)
+def get_completion(client: OpenAI, anthropic_client: Anthropic, model: str, messages: List[Dict[str, str]]) -> dict:
+    if model.startswith("claude"):
+        system_message = next((msg['content'] for msg in messages if msg['role'] == 'system'), None)
+        messages = [msg for msg in messages if msg['role'] != 'system']
+        if system_message:
+            return anthropic_client.messages.create(
+                model=model,
+                messages=messages,
+                system=system_message,
+                max_tokens=4096
+            )
+        return anthropic_client.messages.create(model=model, messages=messages, max_tokens=4096)
+    else:
+        return client.chat.completions.create(model=model, messages=messages)
 
 def get_completion_text(completion: dict) -> str:
-    return completion.choices[0].message.content
+    if hasattr(completion, 'choices'):
+        return completion.choices[0].message.content
+    elif hasattr(completion, 'content'):
+        return completion.content[0].text
+    else:
+        raise ValueError("No completion text found")
 
-def print_completion(model_name: str, text: str):
-    print(f"# {model_name}:")
-    print("```")
-    print(text)
-    print("```")
-    print("\n")
-
-def main(config_file: str, eval_type: str):
+def main(config_file: str):
     config = Config(config_file)
-    try:
-        eval_type_enum = EvalType(eval_type)
-    except ValueError:
-        raise ValueError("Invalid eval_type. Use 'a', 'b', or 'c'.")
     
-    runner = EvaluationRunner(config, eval_type_enum)
+    runner = EvaluationRunner(config)
     runner.run()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python evaluate_fine_tune_model.py <config_file> <eval_type>")
-        print("eval_type should be 'a', 'b', or 'c'")
+    if len(sys.argv) != 2:
+        print("Usage: python evaluate_fine_tune_model.py <config_file>")
         sys.exit(1)
 
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1])
